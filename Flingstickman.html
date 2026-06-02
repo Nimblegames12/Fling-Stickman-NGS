@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fling stickman</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            user-select: none;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #000000;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 15px;
+            border-radius: 8px;
+            pointer-events: none;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            border: 2px solid #000000;
+            width: 250px;
+            display: none; /* Hidden during intro */
+        }
+        h3 { margin: 0 0 10px 0; font-size: 16px; text-transform: uppercase; letter-spacing: 1px; }
+        .mission { margin-bottom: 8px; font-size: 13px; font-weight: bold; }
+        .completed { text-decoration: line-through; color: #888888; }
+        #powerup-notice {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #000000;
+            color: #ffffff;
+            padding: 10px 20px;
+            font-weight: bold;
+            border-radius: 20px;
+            display: none;
+            text-transform: uppercase;
+            font-size: 14px;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        /* Intro Overlay Styling */
+        #intro-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            opacity: 1;
+            transition: opacity 0.8s ease-in-out;
+        }
+        #intro-text {
+            color: #000000;
+            font-size: 42px;
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-align: center;
+            opacity: 0;
+            transform: scale(0.9);
+            transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+</head>
+<body>
+
+<div id="intro-overlay">
+    <div id="intro-text">NIMBLE GAME STUDIOS</div>
+</div>
+
+<div id="ui-layer">
+    <h3>Missions</h3>
+    <div id="mission1" class="mission">1. Drag the Stickman high</div>
+    <div id="mission2" class="mission">2. Hit a Power-up box</div>
+</div>
+
+<div id="powerup-notice">Antigravity Activated!</div>
+
+<script>
+let scene, camera, renderer, world;
+let bodies = [], meshes = [];
+let isDragging = false;
+let draggedBody = null;
+let dragDistance = 0;
+let raycaster = new THREE.Raycaster();
+let mouse = new THREE.Vector2();
+let gPlane = new THREE.Plane();
+let gIntersection = new THREE.Vector3();
+
+let powerUpBoxes = [];
+let antigravityMode = false;
+let antigravityTimer = 0;
+
+let m1Completed = false;
+let m2Completed = false;
+let introActive = true;
+
+const BOUNDS_X = 3.6;
+const BOUNDS_Y_MAX = 4.8;
+const BOUNDS_Y_MIN = 0.2;
+const BOUNDS_Z = 3.6;
+
+init();
+animate();
+
+function init() {
+    setupGraphics();
+    setupPhysics();
+    createEnvironment();
+    create3DRagdoll(0, 3, 0);
+    createPowerUps();
+    setupInput();
+    runIntroSequence();
+}
+
+function runIntroSequence() {
+    const textDiv = document.getElementById('intro-text');
+    const overlayDiv = document.getElementById('intro-overlay');
+    const uiLayer = document.getElementById('ui-layer');
+
+    // Fade in text
+    setTimeout(() => {
+        textDiv.style.opacity = '1';
+        textDiv.style.transform = 'scale(1)';
+    }, 200);
+
+    // Fade out text
+    setTimeout(() => {
+        textDiv.style.opacity = '0';
+        textDiv.style.transform = 'scale(1.05)';
+    }, 2200);
+
+    // Fade out white overlay panel and show simulation UI
+    setTimeout(() => {
+        overlayDiv.style.opacity = '0';
+        uiLayer.style.display = 'block';
+    }, 2800);
+
+    // Completely strip overlay interaction
+    setTimeout(() => {
+        overlayDiv.style.display = 'none';
+        introActive = false;
+    }, 3600);
+}
+
+function setupGraphics() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xffffff);
+
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 4.5, 8.5);
+    camera.lookAt(0, 2.5, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    let ambientLight = new THREE.AmbientLight(0x999999);
+    scene.add(ambientLight);
+
+    let light = new THREE.DirectionalLight(0xffffff, 0.8);
+    light.position.set(5, 12, 5);
+    light.castShadow = true;
+    scene.add(light);
+}
+
+function setupPhysics() {
+    world = new CANNON.World();
+    world.gravity.set(0, -9.82, 0);
+    world.broadphase = new CANNON.NaiveBroadphase();
+    world.solver.iterations = 10;
+
+    let bouncinessMaterial = new CANNON.Material("bounciness");
+    let bounceContactMaterial = new CANNON.ContactMaterial(
+        bouncinessMaterial,
+        bouncinessMaterial,
+        {
+            friction: 0.1,
+            restitution: 0.85 
+        }
+    );
+    world.addContactMaterial(bounceContactMaterial);
+    world.defaultMaterial = bouncinessMaterial;
+}
+
+function createEnvironment() {
+    let groundShape = new CANNON.Plane();
+    let groundBody = new CANNON.Body({ mass: 0 });
+    groundBody.addShape(groundShape);
+    groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+    world.addBody(groundBody);
+
+    let floorGeo = new THREE.PlaneGeometry(30, 30);
+    let floorMat = new THREE.MeshPhongMaterial({ color: 0xdddddd });
+    let floorMesh = new THREE.Mesh(floorGeo, floorMat);
+    floorMesh.rotation.x = -Math.PI / 2;
+    floorMesh.receiveShadow = true;
+    scene.add(floorMesh);
+
+    createBorderWall(0, 2.5, -4, 8, 5, 0.4); 
+    createBorderWall(-4, 2.5, 0, 0.4, 5, 8); 
+    createBorderWall(4, 2.5, 0, 0.4, 5, 8);  
+}
+
+function createBorderWall(x, y, z, w, h, d) {
+    let shape = new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2));
+    let body = new CANNON.Body({ mass: 0 });
+    body.addShape(shape);
+    body.position.set(x, y, z);
+    world.addBody(body);
+
+    let geo = new THREE.BoxGeometry(w, h, d);
+    let mat = new THREE.MeshPhongMaterial({ color: 0x222222, transparent: true, opacity: 0.8 });
+    let mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    scene.add(mesh);
+}
+
+function createHeadWithFace(mass, radius, pos) {
+    let shape = new CANNON.Box(new CANNON.Vec3(radius, radius, radius));
+    let body = new CANNON.Body({ mass: mass });
+    body.addShape(shape);
+    body.position.set(pos.x, pos.y, pos.z);
+    body.linearDamping = 0.01;
+    body.angularDamping = 0.01;
+    world.addBody(body);
+    bodies.push(body);
+
+    let headGroup = new THREE.Group();
+
+    let headGeo = new THREE.BoxGeometry(radius * 2, radius * 2, radius * 2);
+    let headMat = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+    let headMesh = new THREE.Mesh(headGeo, headMat);
+    headMesh.castShadow = true;
+    headGroup.add(headMesh);
+
+    let eyeGeo = new THREE.BoxGeometry(0.06, 0.06, 0.06);
+    let eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    
+    let leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+    leftEye.position.set(-0.1, 0.1, radius + 0.01);
+    headGroup.add(leftEye);
+
+    let rightEye = leftEye.clone();
+    rightEye.position.x = 0.1;
+    headGroup.add(rightEye);
+
+    let pupilGeo = new THREE.BoxGeometry(0.03, 0.03, 0.03);
+    let pupilMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    
+    let leftPupil = new THREE.Mesh(pupilGeo, pupilMat);
+    leftPupil.position.set(-0.1, 0.1, radius + 0.04);
+    headGroup.add(leftPupil);
+
+    let rightPupil = leftPupil.clone();
+    rightPupil.position.x = 0.1;
+    headGroup.add(rightPupil);
+
+    let mouthGeo = new THREE.BoxGeometry(0.16, 0.04, 0.04);
+    let mouthMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    let mouth = new THREE.Mesh(mouthGeo, mouthMat);
+    mouth.position.set(0, -0.1, radius + 0.01);
+    headGroup.add(mouth);
+
+    scene.add(headGroup);
+    meshes.push(headGroup);
+
+    body.userMesh = headGroup;
+    body.isStickman = true;
+    return body;
+}
+
+function addLimb(mass, width, height, depth, pos, color = 0xff0000) {
+    let shape = new CANNON.Box(new CANNON.Vec3(width / 2, height / 2, depth / 2));
+    let body = new CANNON.Body({ mass: mass });
+    body.addShape(shape);
+    body.position.set(pos.x, pos.y, pos.z);
+    body.linearDamping = 0.01; 
+    body.angularDamping = 0.01;
+    world.addBody(body);
+    bodies.push(body);
+
+    let geo = new THREE.BoxGeometry(width, height, depth);
+    let mat = new THREE.MeshPhongMaterial({ color: color });
+    let mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    scene.add(mesh);
+    meshes.push(mesh);
+
+    body.userMesh = mesh;
+    body.isStickman = true;
+    return body;
+}
+
+function addJoint(bodyA, bodyB, pivotA, pivotB) {
+    let constraint = new CANNON.PointToPointConstraint(bodyA, pivotA, bodyB, pivotB);
+    world.addConstraint(constraint);
+}
+
+function create3DRagdoll(x, y, z) {
+    let head = createHeadWithFace(1.0, 0.2, new THREE.Vector3(x, y + 1.1, z));
+    let torso = addLimb(2.0, 0.6, 0.9, 0.4, new THREE.Vector3(x, y + 0.45, z));
+    
+    let rUpperArm = addLimb(0.4, 0.15, 0.5, 0.15, new THREE.Vector3(x + 0.45, y + 0.65, z));
+    let rLowerArm = addLimb(0.3, 0.12, 0.4, 0.12, new THREE.Vector3(x + 0.45, y + 0.15, z));
+    
+    let lUpperArm = addLimb(0.4, 0.15, 0.5, 0.15, new THREE.Vector3(x - 0.45, y + 0.65, z));
+    let lLowerArm = addLimb(0.3, 0.12, 0.4, 0.12, new THREE.Vector3(x - 0.45, y + 0.15, z));
+
+    let rThigh = addLimb(0.8, 0.2, 0.6, 0.2, new THREE.Vector3(x + 0.2, y - 0.3, z));
+    let rShin  = addLimb(0.5, 0.16, 0.5, 0.16, new THREE.Vector3(x + 0.2, y - 0.85, z));
+
+    let lThigh = addLimb(0.8, 0.2, 0.6, 0.2, new THREE.Vector3(x - 0.2, y - 0.3, z));
+    let lShin  = addLimb(0.5, 0.16, 0.5, 0.16, new THREE.Vector3(x - 0.2, y - 0.85, z));
+
+    addJoint(torso, head, new CANNON.Vec3(0, 0.45, 0), new CANNON.Vec3(0, -0.2, 0));
+
+    addJoint(torso, rUpperArm, new CANNON.Vec3(0.3, 0.35, 0), new CANNON.Vec3(-0.075, 0.25, 0));
+    addJoint(rUpperArm, rLowerArm, new CANNON.Vec3(0, -0.25, 0), new CANNON.Vec3(0, 0.2, 0));
+
+    addJoint(torso, lUpperArm, new CANNON.Vec3(-0.3, 0.35, 0), new CANNON.Vec3(0.075, 0.25, 0));
+    addJoint(lUpperArm, lLowerArm, new CANNON.Vec3(0, -0.25, 0), new CANNON.Vec3(0, 0.2, 0));
+
+    addJoint(torso, rThigh, new CANNON.Vec3(0.2, -0.45, 0), new CANNON.Vec3(0, 0.3, 0));
+    addJoint(rThigh, rShin, new CANNON.Vec3(0, -0.3, 0), new CANNON.Vec3(0, 0.25, 0));
+
+    addJoint(torso, lThigh, new CANNON.Vec3(-0.2, -0.45, 0), new CANNON.Vec3(0, 0.3, 0));
+    addJoint(lThigh, lShin, new CANNON.Vec3(0, -0.3, 0), new CANNON.Vec3(0, 0.25, 0));
+}
+
+function createPowerUps() {
+    spawnPowerUpBox(-1.5, 1, -1);
+    spawnPowerUpBox(1.5, 2, 1);
+}
+
+function spawnPowerUpBox(x, y, z) {
+    let size = 0.4;
+    let shape = new CANNON.Box(new CANNON.Vec3(size/2, size/2, size/2));
+    let body = new CANNON.Body({ mass: 1 });
+    body.addShape(shape);
+    body.position.set(x, y, z);
+    
+    body.addEventListener("collide", function(e) {
+        if (e.body.isStickman && !antigravityMode) {
+            triggerAntigravity();
+            m2Completed = true;
+            document.getElementById('mission2').classList.add('completed');
+        }
+    });
+
+    world.addBody(body);
+    bodies.push(body);
+
+    let geo = new THREE.BoxGeometry(size, size, size);
+    let mat = new THREE.MeshPhongMaterial({ color: 0x00ff00, emissive: 0x003300 });
+    let mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    scene.add(mesh);
+    meshes.push(mesh);
+
+    body.userMesh = mesh;
+    powerUpBoxes.push(body);
+}
+
+function triggerAntigravity() {
+    antigravityMode = true;
+    antigravityTimer = 300; 
+    world.gravity.set(0, -1.5, 0); 
+    document.getElementById('powerup-notice').style.display = 'block';
+}
+
+function setupInput() {
+    window.addEventListener('mousedown', onMouseDown, false);
+    window.addEventListener('mousemove', onMouseMove, false);
+    window.addEventListener('mouseup', onMouseUp, false);
+    window.addEventListener('resize', onWindowResize, false);
+}
+
+function onMouseDown(event) {
+    if (introActive) return; // Prevent clicking during intro animation
+
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    
+    let targetMeshes = [];
+    meshes.forEach(m => {
+        if (m.isGroup) {
+            targetMeshes.push(...m.children);
+        } else {
+            targetMeshes.push(m);
+        }
+    });
+
+    let intersects = raycaster.intersectObjects(targetMeshes);
+
+    if (intersects.length > 0) {
+        let hitObj = intersects[0].object;
+        
+        draggedBody = bodies.find(b => {
+            if (!b.userMesh) return false;
+            if (b.userMesh.isGroup) {
+                return b.userMesh.children.includes(hitObj);
+            }
+            return b.userMesh === hitObj;
+        });
+
+        if (draggedBody && draggedBody.mass > 0) {
+            isDragging = true;
+            dragDistance = intersects[0].distance;
+            
+            let normal = camera.getWorldDirection(new THREE.Vector3());
+            gPlane.setFromNormalAndCoplanarPoint(normal.negate(), intersects[0].point);
+        }
+    }
+}
+
+function onMouseMove(event) {
+    if (introActive || !isDragging || !draggedBody) return;
+
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(mouse, camera);
+    raycaster.ray.intersectPlane(gPlane, gIntersection);
+
+    let targetX = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, gIntersection.x));
+    let targetY = Math.max(BOUNDS_Y_MIN, Math.min(BOUNDS_Y_MAX, gIntersection.y));
+    let targetZ = Math.max(-BOUNDS_Z, Math.min(BOUNDS_Z, gIntersection.z));
+
+    draggedBody.position.set(targetX, targetY, targetZ);
+    draggedBody.velocity.set(0, 0, 0);
+    draggedBody.angularVelocity.set(0, 0, 0);
+
+    if (draggedBody.isStickman && draggedBody.position.y > 3.5 && !m1Completed) {
+        m1Completed = true;
+        document.getElementById('mission1').classList.add('completed');
+    }
+}
+
+function onMouseUp() {
+    isDragging = false;
+    draggedBody = null;
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    world.step(1 / 60);
+
+    if (antigravityMode) {
+        antigravityTimer--;
+        if (antigravityTimer <= 0) {
+            antigravityMode = false;
+            world.gravity.set(0, -9.82, 0);
+            document.getElementById('powerup-notice').style.display = 'none';
+        }
+    }
+
+    for (let i = 0; i < bodies.length; i++) {
+        if (bodies[i].isStickman) {
+            if (bodies[i].position.x >= BOUNDS_X) {
+                bodies[i].position.x = BOUNDS_X;
+                bodies[i].velocity.x = -Math.abs(bodies[i].velocity.x) * 0.85;
+            } else if (bodies[i].position.x <= -BOUNDS_X) {
+                bodies[i].position.x = -BOUNDS_X;
+                bodies[i].velocity.x = Math.abs(bodies[i].velocity.x) * 0.85;
+            }
+
+            if (bodies[i].position.y >= BOUNDS_Y_MAX) {
+                bodies[i].position.y = BOUNDS_Y_MAX;
+                bodies[i].velocity.y = -Math.abs(bodies[i].velocity.y) * 0.85;
+            } else if (bodies[i].position.y <= BOUNDS_Y_MIN) {
+                bodies[i].position.y = BOUNDS_Y_MIN;
+                bodies[i].velocity.y = Math.abs(bodies[i].velocity.y) * 0.85;
+            }
+
+            if (bodies[i].position.z >= BOUNDS_Z) {
+                bodies[i].position.z = BOUNDS_Z;
+                bodies[i].velocity.z = -Math.abs(bodies[i].velocity.z) * 0.85;
+            } else if (bodies[i].position.z <= -BOUNDS_Z) {
+                bodies[i].position.z = -BOUNDS_Z;
+                bodies[i].velocity.z = Math.abs(bodies[i].velocity.z) * 0.85;
+            }
+        }
+
+        if (bodies[i].userMesh) {
+            bodies[i].userMesh.position.copy(bodies[i].position);
+            bodies[i].userMesh.quaternion.copy(bodies[i].quaternion);
+        }
+    }
+
+    renderer.render(scene, camera);
+}
+</script>
+
+</body>
+</html>
